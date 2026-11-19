@@ -10,6 +10,10 @@ Jazakum Allahu khayran for helping. Code changes follow normal open-source pract
 4. **Promises in the Quran are not attributed to the Prophet ﷺ**, and statements of companions or scholars are attributed to them by name.
 5. **Two reviewers** for any content change, at least one of them able to verify the Arabic and the hadith reference.
 
+## Daily actions (actions.py)
+
+An action is a simple good deed or an established Sunnah practice, worded as an invitation. Don't add rewards, numbers or virtues that aren't already cited in `passages.py`, and don't attach an action to a disputed practice.
+
 ## Reciters
 
 Add a reciter only if all of these are true:

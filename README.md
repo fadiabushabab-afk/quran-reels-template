@@ -12,9 +12,9 @@
 |---|---|
 | **1. Choose** | A passage from `passages.py`: short surahs in full, well-known verses of great virtue (with the hadith source and grade), and thematic passages. **Every passage is complete in meaning.** Groups rotate daily; Fridays use the first or last ten verses of Al-Kahf. Each passage is used once before any repeats. |
 | **2. Fetch** | Uthmani text, Saheeh International English and التفسير الميسر from [api.alquran.cloud](https://alquran.cloud/api); verse-by-verse audio from [everyayah.com](https://everyayah.com) (20 reciters, all 128–192 kbps). |
-| **3. Trim audio** | `audio_trim.py` ends the recitation exactly at the end of the last verse, so the reciter's next breath isn't heard. |
+| **3. Clean audio** | `audio_trim.py` joins the verse files without the dead gap left where a reverberant reciter's echo is cut off, and ends the reel exactly at the end of the last verse, keeping a held «ن / م» but not the reciter's next breath. |
 | **4. Render** | Verse-synchronised Arabic (Amiri Quran) and English over a background, with soft looping motion (light rays, dust, slow drift) from `motion.py`. Text colour adapts to light or dark images. Default length is up to 30 s; a longer passage is posted one complete *ruku'* section at a time. |
-| **5. Caption** | A hook line, the virtue and its source, a short reflection from التفسير الميسر, the verses in Arabic and English, the reciter, and 5 hashtags. Kept within Instagram's limit. |
+| **5. Caption** | A hook line, the virtue and its source, a short reflection from التفسير الميسر, the verses in Arabic and English, the reciter, **«عمل اليوم»** (one small practical action for the day, matched to the passage, from `actions.py`), and 5 hashtags. Kept within Instagram's limit. |
 | **6. Publish** | Instagram Reel, Facebook Page Reel and TikTok, plus optional Instagram and Facebook Stories. Records what was posted in `history.json`. |
 | **7. Recover** | If generating or posting fails, the run waits 45 minutes and retries, reposting only where it failed, so nothing goes out twice. Watchdog runs cover days when GitHub skips a schedule. |
 | **8. Learn** *(optional)* | `trends.py` reads your own reels' saves, shares and reach (and, if the Meta app is allowed, top posts on Quran hashtags), and puts the best-performing passages first. |
@@ -74,7 +74,8 @@ To post a second (morning) reel each day, uncomment the two morning `cron` lines
 ```
 generate.py          choose passage → fetch text/audio → render reel.mp4 + caption
 passages.py          curated, complete-in-meaning passages (+ virtue source and grade)
-audio_trim.py        cut the audio at the true end of the last verse
+audio_trim.py        smooth verse joins; cut the audio at the true end of the last verse
+actions.py           «عمل اليوم»: a small daily action matched to each passage
 motion.py            soft looping motion for still backgrounds
 bgstyles.py          drawn Islamic geometric fallback backgrounds
 sync_backgrounds.py  prepare a folder of images/clips as backgrounds
