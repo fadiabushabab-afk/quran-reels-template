@@ -1,0 +1,49 @@
+name: Verse trends
+
+# Daily, a few hours before the reel: reads our own reels' results and popular Quran hashtags on
+# Instagram, and saves trends.json (generate.py puts trending passages first). Read-only on
+# Instagram; it never posts. A separate workflow, so it never counts as a reel run for the guard.
+on:
+  schedule:
+    - cron: "23 11 * * *"     # 14:23 local (UTC+3)
+  workflow_dispatch:
+
+permissions:
+  contents: write             # to commit trends.json
+
+concurrency:
+  group: trends
+  cancel-in-progress: false
+
+jobs:
+  trends:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Read trends
+        env:
+          META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          TREND_TAGS: ${{ vars.TREND_TAGS }}   # optional: comma-separated hashtags (max 30 per 7 days)
+        run: python trends.py
+
+      - name: Save trends.json
+        run: |
+          [ -f trends.json ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add trends.json
+          git diff --cached --quiet && exit 0
+          git commit -q -m "Update verse trends [skip ci]"
+          for i in 1 2 3; do
+            git pull -q --rebase origin "${GITHUB_REF_NAME}" && git push -q origin "HEAD:${GITHUB_REF_NAME}" && exit 0
+            sleep 10
+          done
+          exit 1

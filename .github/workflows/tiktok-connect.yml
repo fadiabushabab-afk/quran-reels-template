@@ -1,0 +1,46 @@
+name: TikTok connect
+
+# One-time (and yearly) link between the TikTok account and this repo.
+# 1. Run with the box empty: the run summary shows a TikTok link. Open it, log in, allow everything.
+# 2. TikTok sends you to the redirect page; copy that whole address from the browser bar.
+# 3. Within a few minutes, run again with the address pasted in the box. The refresh token is
+#    saved as the TIKTOK_REFRESH_TOKEN secret (never shown).
+on:
+  workflow_dispatch:
+    inputs:
+      code:
+        description: "Empty = get the TikTok link. Then paste the whole address TikTok sent you to"
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  connect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+      TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+      TIKTOK_REDIRECT_URI: ${{ vars.TIKTOK_REDIRECT_URI }}
+      GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}
+      CODE: ${{ github.event.inputs.code }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Check setup
+        run: |
+          missing=""
+          [ -n "$TIKTOK_CLIENT_KEY" ] || missing="$missing TIKTOK_CLIENT_KEY(secret)"
+          [ -n "$TIKTOK_CLIENT_SECRET" ] || missing="$missing TIKTOK_CLIENT_SECRET(secret)"
+          [ -n "$TIKTOK_REDIRECT_URI" ] || missing="$missing TIKTOK_REDIRECT_URI(variable)"
+          [ -n "$GH_ADMIN_TOKEN" ] || missing="$missing GH_ADMIN_TOKEN(secret)"
+          if [ -n "$missing" ]; then echo "::error title=Missing settings::$missing"; exit 1; fi
+      - name: Show the TikTok link
+        if: env.CODE == ''
+        run: |
+          url=$(python tiktok.py url)
+          echo "::notice title=Open this link, allow posting, then run again with the address you land on::$url"
+          { echo "### Step 1: open this link on the TikTok account's phone or browser"; echo; echo "$url"; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Save the connection
+        if: env.CODE != ''
+        run: python tiktok.py connect "$CODE"

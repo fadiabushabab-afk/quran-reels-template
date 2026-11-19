@@ -1,0 +1,2 @@
+# Files in the source folder that sync_backgrounds.py must never copy (one name or stem per line).
+# example_low_res_image   # too small

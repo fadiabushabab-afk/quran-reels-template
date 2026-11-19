@@ -1,0 +1,261 @@
+name: Daily Quran reel
+
+on:
+  schedule:
+    # Optional second (MORNING) reel: uncomment this line and the 09:37 watchdog below.
+    # - cron: "7 5 * * 0-4,6"   # 08:07 UTC+3, Saturday-Thursday: MORNING reel (no story)
+    - cron: "7 15 * * 0-4,6"  # 18:07 UTC+3, Saturday-Thursday: EVENING reel (off the hour: :00 jobs are often delayed)
+    - cron: "7 6 * * 5"       # 09:07 UTC+3 on Friday, so Al-Kahf goes out within Friday (ends at Maghrib)
+    # Watchdogs: GitHub sometimes drops a scheduled run entirely (no run, so no retry either).
+    # These make the reel only if nothing has run or been posted today (see the guard job).
+    # - cron: "37 6 * * 0-4,6"  # 09:37 UTC+3 (morning watchdog)
+    - cron: "7 16 * * 0-4,6"  # 19:07 UTC+3
+    - cron: "7 18 * * 0-4,6"  # 21:07 UTC+3
+    - cron: "37 7 * * 5"      # 10:37 UTC+3, Friday
+    - cron: "37 9 * * 5"      # 12:37 UTC+3, Friday
+  workflow_dispatch:         # "Run workflow" button for manual runs
+    inputs:
+      reciter:
+        description: "Reciter key (or random)"
+        default: "random"
+      publish:
+        description: "Post this video?"
+        type: boolean
+        default: false
+      platforms:
+        description: "Where to post, comma separated: instagram,facebook,tiktok (empty = the PLATFORMS variable)"
+        default: ""
+      story:
+        description: "Also share the reel to the Instagram and Facebook Story?"
+        type: boolean
+        default: true
+      slot:
+        description: "Which reel: morning or evening (morning reels get no story)"
+        type: choice
+        options: [evening, morning]
+        default: evening
+      date:
+        description: "Test only: pretend today is YYYY-MM-DD (empty = real date)"
+        default: ""
+      background:
+        description: "Test only: force one file from backgrounds/ (empty = normal rotation)"
+        default: ""
+      verses:
+        description: "Test only: a specific passage, e.g. 2:255 (empty = normal rotation; never recorded)"
+        default: ""
+      retry_of:
+        description: "Automatic retries only (leave empty): id of the failed run"
+        default: ""
+      attempt:
+        description: "Automatic retries only (leave 0): retry number"
+        default: "0"
+      auto:
+        description: "External scheduler only (leave empty): 'true' makes this run behave like a scheduled one"
+        default: ""
+
+# Time zone used for "today", Fridays and the posting windows. The cron lines below are in UTC and
+# are set for Asia/Baghdad (UTC+3): shift them if you change TIMEZONE.
+env:
+  REEL_TZ: ${{ vars.TIMEZONE || 'Asia/Baghdad' }}
+  REEL_HANDLE: ${{ vars.HANDLE || '' }}
+
+permissions:
+  contents: write             # to commit history.json
+  actions: read               # a retry reads the failed run's files
+
+concurrency:
+  group: daily-reel
+  cancel-in-progress: false
+
+jobs:
+  guard:
+    # Two reels a day, Saturday-Thursday: MORNING (08:07) and EVENING (18:07); one on Friday (09:07).
+    # Scheduled runs only: skip if this slot's reel is already in history.json (one reel per slot).
+    # Watchdog runs also skip if any other run of this workflow started since the slot began, since
+    # a failed run is already handled by its own 45-minute retry.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      go: ${{ steps.check.outputs.go }}
+      slot: ${{ steps.check.outputs.slot }}
+    steps:
+      - uses: actions/checkout@v5
+        if: github.event_name == 'schedule' || github.event.inputs.auto == 'true'
+      - name: Decide whether to make a reel
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          SCHED: ${{ github.event.schedule }}
+          SLOT_INPUT: ${{ github.event.inputs.slot }}
+          AUTO: ${{ github.event.inputs.auto }}
+        run: |
+          # External scheduler (cron-job.org etc. calling workflow_dispatch with auto=true): GitHub's own
+          # schedule has started runs 7-9 hours late since 16 Nov, so an outside trigger is the main
+          # one. It gets the same window and one-reel-per-slot checks as a scheduled run.
+          if [ "$AUTO" = "true" ]; then
+            SCHED="auto-${SLOT_INPUT:-evening}"
+          elif [ "$EVENT" != "schedule" ]; then
+            echo "slot=${SLOT_INPUT:-evening}" >> "$GITHUB_OUTPUT"; echo "go=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          today=$(TZ="$REEL_TZ" date +%F)
+          hour=$((10#$(TZ="$REEL_TZ" date +%H))); dow=$(TZ="$REEL_TZ" date +%u)
+          # Which reel this run is for, and its window (local hours)
+          case "$SCHED" in
+            "7 5 * * 0-4,6"|"37 6 * * 0-4,6"|auto-morning) slot=morning; from=8; until=17 ;;
+            *) slot=evening; from=18; until=24; [ "$dow" = "5" ] && from=9 ;;
+          esac
+          echo "slot=$slot" >> "$GITHUB_OUTPUT"
+          # GitHub can start a scheduled run hours late. A run that lands after midnight would
+          # post the NEXT day's reel early (16 Nov: the 21:07 check ran at 01:43), and a morning
+          # run that starts in the evening would post next to the evening reel. So a scheduled
+          # run only posts inside its window: morning 08:00-17:00, evening from 18:00 (09:00 Friday).
+          if [ "$hour" -lt "$from" ] || [ "$hour" -ge "$until" ]; then
+            echo "::notice title=Outside the $slot window::scheduled run started at ${hour}:xx local; the $slot reel goes out ${from}:00-${until}:00"
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          posted=$(python3 -c "import json,sys; h=json.load(open('history.json')); h=h if isinstance(h,list) else h.get('entries',h.get('history',[])); print('yes' if any(isinstance(e,dict) and e.get('date')==sys.argv[1] and e.get('posted') and (e.get('slot') or 'evening')==sys.argv[2] for e in h) else 'no')" "$today" "$slot" || echo "no")
+          if [ "$posted" = "yes" ]; then
+            echo "::notice title=Already posted::today's $slot reel ($today) is already in history.json; nothing to do"
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          case "$SCHED" in
+            "7 5 * * 0-4,6"|"7 15 * * 0-4,6"|"7 6 * * 5"|auto-*) echo "go=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          # Watchdog: has anything else run since this slot began (local time)?
+          start=$(date -u -d "TZ=\"$REEL_TZ\" $today $(printf %02d "$from"):00" +%Y-%m-%dT%H:%M:%SZ)
+          if ! others=$(gh run list --repo "${{ github.repository }}" --workflow daily-reel.yml --created ">=$start" -L 50 \
+                          --json databaseId --jq '[.[] | select(.databaseId != ${{ github.run_id }})] | length'); then
+            echo "::warning title=Watchdog could not check runs::skipping to avoid a double post"
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$others" -gt 0 ]; then
+            echo "::notice title=Watchdog: nothing to do::$others other run(s) since the $slot slot began; failures are handled by their own retry"
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning title=Scheduled run was skipped by GitHub::no $slot run today ($today); the watchdog is making the $slot reel"
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  reel:
+    needs: guard
+    if: needs.guard.outputs.go == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install ffmpeg and Arabic text shaping
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg libraqm0
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - run: pip install -r requirements.txt
+
+      - name: Check the failed run (automatic retries only)
+        id: prev
+        if: github.event.inputs.retry_of != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Retry ${{ github.event.inputs.attempt }} of failed run ${{ github.event.inputs.retry_of }}"
+          gh run download "${{ github.event.inputs.retry_of }}" --repo "${{ github.repository }}" -D prev || true
+          pub=$(find prev -name published.json | head -1)
+          vid=$(find prev -name reel.mp4 | head -1)
+          if [ -n "$pub" ] && [ -n "$vid" ] && python -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if any('permalink' in d.get(k,{}) for k in ('instagram','facebook','tiktok')) else 1)" "$pub"; then
+            echo "Part of the reel already went out: reusing the same video, posting only where it failed"
+            mkdir -p out && cp "$(dirname "$vid")"/* out/
+            echo "published=$PWD/$pub" >> "$GITHUB_OUTPUT"
+          else
+            echo "Nothing went out: generating a new reel"
+          fi
+
+      - name: Generate reel
+        id: gen
+        if: steps.prev.outputs.published == ''
+        run: |
+          python -c "from PIL import features; print('raqm:', features.check('raqm'))"
+          set +e
+          python generate.py --reciter "${{ github.event.inputs.reciter || 'random' }}" \
+                             ${{ github.event.inputs.date && format('--date {0}', github.event.inputs.date) || '' }} \
+                             ${{ github.event.inputs.background && format('--bg-file {0}', github.event.inputs.background) || '' }} \
+                             ${{ github.event.inputs.verses && format('--verses {0}', github.event.inputs.verses) || '' }} \
+                             --slot "${{ needs.guard.outputs.slot || 'evening' }}" \
+                             --handle "${{ vars.HANDLE || '' }}" 2> err.txt
+          code=$?
+          set -e
+          cat err.txt
+          if [ $code -ne 0 ]; then
+            echo "::error title=generate.py failed::$(tail -c 1500 err.txt | tr '\n' ' ')"
+            exit $code
+          fi
+          cat out/caption.txt
+
+      - name: Save video as a downloadable artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: reel-${{ github.run_number }}
+          path: out/
+          retention-days: 14
+
+      - name: Publish to Instagram / Facebook (reel + story)
+        id: pub
+        if: github.event_name == 'schedule' || github.event.inputs.publish == 'true' || github.event.inputs.auto == 'true'
+        env:
+          META_PAGE_TOKEN: ${{ secrets.META_PAGE_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          PLATFORMS: ${{ github.event.inputs.platforms || vars.PLATFORMS || 'instagram,facebook' }}
+          STORIES: ${{ github.event.inputs.story || vars.STORIES || 'true' }}   # scheduled runs: on unless the STORIES variable is false
+          IG_HANDLE: ${{ vars.HANDLE || '' }}
+          MEDIA_REPO: ${{ vars.MEDIA_REPO }}          # optional public repo for the Instagram fallback
+          MEDIA_TOKEN: ${{ secrets.MEDIA_TOKEN }}
+          RETRY_PREV: ${{ steps.prev.outputs.published }}
+          TIKTOK_CLIENT_KEY: ${{ secrets.TIKTOK_CLIENT_KEY }}
+          TIKTOK_CLIENT_SECRET: ${{ secrets.TIKTOK_CLIENT_SECRET }}
+          TIKTOK_REFRESH_TOKEN: ${{ secrets.TIKTOK_REFRESH_TOKEN }}
+          TIKTOK_PRIVACY: ${{ vars.TIKTOK_PRIVACY }}
+          GH_ADMIN_TOKEN: ${{ secrets.GH_ADMIN_TOKEN }}   # saves TikTok's rotated refresh token
+        run: python publish.py out     # also commits history.json when something was posted
+
+      - name: Save what was posted (read by an automatic retry)
+        if: always() && steps.pub.outcome != 'skipped'
+        uses: actions/upload-artifact@v6
+        with:
+          name: result-${{ github.run_number }}
+          path: |
+            out/published.json
+            out/history_entry.json
+          if-no-files-found: ignore
+          retention-days: 14
+
+  retry:
+    # A scheduled run (or a retry) that failed while generating or posting: wait 45 min, then run again.
+    # Up to MAX_RETRIES times (repository variable, default 2). Manual test runs are never retried.
+    needs: [guard, reel]
+    if: >-
+      failure() &&
+      (github.event_name == 'schedule' || github.event.inputs.auto == 'true' || github.event.inputs.retry_of != '') &&
+      fromJSON(github.event.inputs.attempt || '0') < fromJSON(vars.MAX_RETRIES || '2')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Wait 45 minutes
+        run: sleep ${{ vars.RETRY_DELAY_SEC || 2700 }}
+      - name: Start the retry run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          next=$(( ${{ github.event.inputs.attempt || '0' }} + 1 ))
+          gh workflow run daily-reel.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}" \
+            -f publish=true -f retry_of="${{ github.run_id }}" -f attempt="$next" \
+            -f platforms="${{ github.event.inputs.platforms || vars.PLATFORMS || 'instagram,facebook' }}" \
+            -f slot="${{ needs.guard.outputs.slot || 'evening' }}"
+          echo "::notice title=Retry $next started::the reel is being made again after the failure of run ${{ github.run_id }}"
